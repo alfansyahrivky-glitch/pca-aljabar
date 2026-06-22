@@ -28,6 +28,8 @@ streamlit run app.py
 
 3. Buka browser sesuai link yang muncul dari Streamlit.
 
+> Catatan: Dataset tidak disertakan di repository. Dataset LFW akan diunduh secara otomatis oleh `scikit-learn` saat aplikasi dijalankan.
+
 ## Cara Menjalankan di Streamlit Community Cloud
 
 1. Upload file berikut ke GitHub:

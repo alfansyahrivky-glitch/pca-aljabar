@@ -153,6 +153,77 @@ def interpret_similarity(percentage):
         return "Kemiripan rendah. Kemungkinan berbeda, atau kualitas/angle foto kurang mendukung."
 
 
+def pca_compress(image_matrix, k):
+    """
+    Kompres satu channel gambar menggunakan PCA.
+    """
+    mean = np.mean(image_matrix, axis=0)
+    centered = image_matrix - mean
+
+    cov_matrix = np.cov(centered, rowvar=False)
+    eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
+    sorted_index = np.argsort(eigenvalues)[::-1]
+    eigenvectors = eigenvectors[:, sorted_index]
+    eigenvector_subset = eigenvectors[:, :k]
+
+    compressed = np.dot(centered, eigenvector_subset)
+    reconstructed = np.dot(compressed, eigenvector_subset.T) + mean
+
+    return reconstructed
+
+
+def calculate_compression_ratio(rows, cols, k, channels):
+    """
+    Hitung persentase ukuran kompresi terhadap ukuran asli.
+    """
+    original_size = rows * cols * channels
+    compressed_size = (rows * k + k * cols) * channels
+
+    return (compressed_size / original_size) * 100
+
+
+def compress_image_with_pca(image, k):
+    """
+    Kompres gambar RGB dan grayscale menggunakan PCA.
+    """
+    img_rgb = image.convert("RGB")
+    img_rgb_array = np.array(img_rgb, dtype=float)
+    rows, cols, _ = img_rgb_array.shape
+
+    R = img_rgb_array[:, :, 0]
+    G = img_rgb_array[:, :, 1]
+    B = img_rgb_array[:, :, 2]
+
+    R_compressed = pca_compress(R, k)
+    G_compressed = pca_compress(G, k)
+    B_compressed = pca_compress(B, k)
+
+    rgb_compressed = np.stack((R_compressed, G_compressed, B_compressed), axis=2)
+    rgb_compressed = np.clip(rgb_compressed, 0, 255).astype(np.uint8)
+
+    img_gray = image.convert("L")
+    gray_array = np.array(img_gray, dtype=float)
+    gray_compressed = pca_compress(gray_array, k)
+    gray_compressed = np.clip(gray_compressed, 0, 255).astype(np.uint8)
+
+    original_rgb = img_rgb_array.astype(np.uint8)
+    original_gray = np.array(img_gray, dtype=np.uint8)
+
+    ratio_rgb = calculate_compression_ratio(rows, cols, k, 3)
+    ratio_gray = calculate_compression_ratio(rows, cols, k, 1)
+
+    return {
+        "original_rgb": original_rgb,
+        "rgb_compressed": rgb_compressed,
+        "original_gray": original_gray,
+        "gray_compressed": gray_compressed,
+        "ratio_rgb": ratio_rgb,
+        "ratio_gray": ratio_gray,
+        "rows": rows,
+        "cols": cols,
+    }
+
+
 def compare_two_faces(old_file, current_file, pca, face_size=(64, 64)):
     """
     Membandingkan dua foto wajah.
@@ -217,198 +288,244 @@ def compare_one_to_many(old_file, current_files, pca, face_size=(64, 64)):
     }
 
 
-st.title("Sistem Verifikasi Kemiripan Wajah Berbasis PCA")
-st.caption("Aplikasi Streamlit untuk membandingkan foto lama dan foto sekarang menggunakan PCA + cosine similarity.")
+st.title("Sistem Verifikasi dan Kompresi Gambar PCA")
+st.caption("Aplikasi Streamlit untuk verifikasi wajah dan kompresi gambar menggunakan PCA.")
 
 with st.expander("Penjelasan singkat sistem"):
     st.write(
         """
-        Sistem ini menggunakan PCA untuk mengambil fitur utama dari wajah.
-        Setelah wajah diubah menjadi embedding PCA, dua wajah dibandingkan menggunakan cosine similarity.
+        Aplikasi ini menyediakan dua fitur:
 
-        Cocok untuk demo computer vision, tugas, dan eksperimen face similarity sederhana.
-        Tidak cocok untuk keputusan hukum, verifikasi identitas resmi, atau sistem biometrik serius.
+        1. Verifikasi wajah dengan PCA + cosine similarity.
+        2. Kompresi gambar RGB dan grayscale menggunakan PCA.
+
+        Cocok untuk demo computer vision, tugas, dan eksperimen PCA sederhana.
         """
     )
 
-st.sidebar.title("Pengaturan Model")
-
-n_components = st.sidebar.slider(
-    "Jumlah komponen PCA",
-    min_value=50,
-    max_value=250,
-    value=150,
-    step=10
-)
-
-face_size_value = st.sidebar.selectbox(
-    "Ukuran wajah",
-    options=[48, 64, 80, 96],
-    index=1
-)
-
-min_faces = st.sidebar.selectbox(
-    "Minimum foto per orang pada dataset LFW",
-    options=[10, 20, 30, 50],
-    index=1
-)
-
-face_size = (face_size_value, face_size_value)
-
-st.sidebar.info(
-    "Semakin besar komponen PCA dan ukuran wajah, semakin berat prosesnya. "
-    "Kalau laptop mulai mengeluh, kecilkan parameternya."
-)
-
-with st.spinner("Melatih PCA menggunakan dataset LFW..."):
-    pca, metadata = load_and_train_pca(
-        n_components=n_components,
-        face_size=face_size,
-        min_faces_per_person=min_faces
-    )
-
-col_meta_1, col_meta_2, col_meta_3, col_meta_4 = st.columns(4)
-
-col_meta_1.metric("Jumlah Dataset", metadata["jumlah_gambar"])
-col_meta_2.metric("Dimensi Awal", metadata["dimensi_awal"])
-col_meta_3.metric("Dimensi PCA", metadata["dimensi_pca"])
-col_meta_4.metric("Explained Variance", f"{metadata['explained_variance']:.2f}%")
-
-st.divider()
-
-mode = st.radio(
-    "Pilih mode perbandingan",
+app_mode = st.sidebar.radio(
+    "Pilih fitur aplikasi",
     options=[
-        "Dua foto: foto lama vs foto sekarang",
-        "Satu foto lama vs banyak foto sekarang"
+        "Verifikasi wajah",
+        "Kompresi gambar PCA"
     ]
 )
 
-st.warning(
-    "Catatan: Hasil persentase adalah estimasi kemiripan berbasis PCA, bukan bukti identitas mutlak."
-)
+if app_mode == "Verifikasi wajah":
+    st.sidebar.title("Pengaturan Model")
 
-if mode == "Dua foto: foto lama vs foto sekarang":
-    st.subheader("Upload Dua Foto")
+    n_components = st.sidebar.slider(
+        "Jumlah komponen PCA",
+        min_value=50,
+        max_value=250,
+        value=150,
+        step=10
+    )
 
-    col1, col2 = st.columns(2)
+    face_size_value = st.sidebar.selectbox(
+        "Ukuran wajah",
+        options=[48, 64, 80, 96],
+        index=1
+    )
 
-    with col1:
+    min_faces = st.sidebar.selectbox(
+        "Minimum foto per orang pada dataset LFW",
+        options=[10, 20, 30, 50],
+        index=1
+    )
+
+    face_size = (face_size_value, face_size_value)
+
+    st.sidebar.info(
+        "Semakin besar komponen PCA dan ukuran wajah, semakin berat prosesnya. "
+        "Kalau laptop mulai mengeluh, kecilkan parameternya."
+    )
+
+    with st.spinner("Melatih PCA menggunakan dataset LFW..."):
+        pca, metadata = load_and_train_pca(
+            n_components=n_components,
+            face_size=face_size,
+            min_faces_per_person=min_faces
+        )
+
+    col_meta_1, col_meta_2, col_meta_3, col_meta_4 = st.columns(4)
+
+    col_meta_1.metric("Jumlah Dataset", metadata["jumlah_gambar"])
+    col_meta_2.metric("Dimensi Awal", metadata["dimensi_awal"])
+    col_meta_3.metric("Dimensi PCA", metadata["dimensi_pca"])
+    col_meta_4.metric("Explained Variance", f"{metadata['explained_variance']:.2f}%")
+
+    st.divider()
+
+    mode = st.radio(
+        "Pilih mode perbandingan",
+        options=[
+            "Dua foto: foto lama vs foto sekarang",
+            "Satu foto lama vs banyak foto sekarang"
+        ]
+    )
+
+    st.warning(
+        "Catatan: Hasil persentase adalah estimasi kemiripan berbasis PCA, bukan bukti identitas mutlak."
+    )
+
+    if mode == "Dua foto: foto lama vs foto sekarang":
+        st.subheader("Upload Dua Foto")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            old_file = st.file_uploader(
+                "Upload foto lama, misalnya umur 10 tahun",
+                type=["jpg", "jpeg", "png"],
+                key="old_single"
+            )
+
+        with col2:
+            current_file = st.file_uploader(
+                "Upload foto sekarang, misalnya umur 16 tahun",
+                type=["jpg", "jpeg", "png"],
+                key="current_single"
+            )
+
+        if old_file is not None and current_file is not None:
+            if st.button("Hitung Kemiripan", type="primary"):
+                try:
+                    result = compare_two_faces(old_file, current_file, pca, face_size)
+
+                    st.success("Perhitungan selesai.")
+
+                    metric_col1, metric_col2 = st.columns(2)
+                    metric_col1.metric("Cosine Similarity", f"{result['score']:.4f}")
+                    metric_col2.metric("Estimasi Kemiripan", f"{result['percentage']:.2f}%")
+
+                    st.info(result["interpretation"])
+
+                    st.subheader("Preview Deteksi Wajah")
+                    prev_col1, prev_col2 = st.columns(2)
+                    prev_col1.image(result["old_preview"], caption="Deteksi wajah pada foto lama", use_container_width=True)
+                    prev_col2.image(result["current_preview"], caption="Deteksi wajah pada foto sekarang", use_container_width=True)
+
+                    st.subheader("Wajah Hasil Crop")
+                    crop_col1, crop_col2 = st.columns(2)
+                    crop_col1.image(result["old_face"], caption="Crop wajah foto lama", clamp=True, use_container_width=True)
+                    crop_col2.image(result["current_face"], caption="Crop wajah foto sekarang", clamp=True, use_container_width=True)
+
+                except Exception as error:
+                    st.error(str(error))
+
+    else:
+        st.subheader("Upload Satu Foto Lama dan Banyak Foto Sekarang")
+
         old_file = st.file_uploader(
-            "Upload foto lama, misalnya umur 10 tahun",
+            "Upload satu foto lama",
             type=["jpg", "jpeg", "png"],
-            key="old_single"
+            key="old_many"
         )
 
-    with col2:
-        current_file = st.file_uploader(
-            "Upload foto sekarang, misalnya umur 16 tahun",
+        current_files = st.file_uploader(
+            "Upload beberapa foto sekarang",
             type=["jpg", "jpeg", "png"],
-            key="current_single"
+            accept_multiple_files=True,
+            key="current_many"
         )
 
-    if old_file is not None and current_file is not None:
-        if st.button("Hitung Kemiripan", type="primary"):
-            try:
-                result = compare_two_faces(old_file, current_file, pca, face_size)
+        if old_file is not None and current_files:
+            if st.button("Hitung Rata-rata Kemiripan", type="primary"):
+                try:
+                    result = compare_one_to_many(old_file, current_files, pca, face_size)
 
-                st.success("Perhitungan selesai.")
+                    st.success("Perhitungan selesai.")
 
-                metric_col1, metric_col2 = st.columns(2)
-                metric_col1.metric("Cosine Similarity", f"{result['score']:.4f}")
-                metric_col2.metric("Estimasi Kemiripan", f"{result['percentage']:.2f}%")
+                    metric_col1, metric_col2 = st.columns(2)
+                    metric_col1.metric("Rata-rata Cosine Similarity", f"{result['average_score']:.4f}")
+                    metric_col2.metric("Rata-rata Estimasi Kemiripan", f"{result['average_percentage']:.2f}%")
 
-                st.info(result["interpretation"])
+                    st.info(result["interpretation"])
 
-                st.subheader("Preview Deteksi Wajah")
+                    st.subheader("Skor Tiap Foto")
+                    table_data = []
+                    for filename, score, percentage in zip(
+                        result["filenames"],
+                        result["scores"],
+                        result["percentages"]
+                    ):
+                        table_data.append(
+                            {
+                                "Nama File": filename,
+                                "Cosine Similarity": round(score, 4),
+                                "Estimasi Kemiripan": f"{percentage:.2f}%"
+                            }
+                        )
 
-                prev_col1, prev_col2 = st.columns(2)
-                prev_col1.image(result["old_preview"], caption="Deteksi wajah pada foto lama", use_container_width=True)
-                prev_col2.image(result["current_preview"], caption="Deteksi wajah pada foto sekarang", use_container_width=True)
+                    st.dataframe(table_data, use_container_width=True)
 
-                st.subheader("Wajah Hasil Crop")
+                    st.subheader("Foto Lama")
+                    st.image(result["old_preview"], caption="Deteksi wajah pada foto lama", use_container_width=True)
 
-                crop_col1, crop_col2 = st.columns(2)
-                crop_col1.image(result["old_face"], caption="Crop wajah foto lama", clamp=True, use_container_width=True)
-                crop_col2.image(result["current_face"], caption="Crop wajah foto sekarang", clamp=True, use_container_width=True)
+                    st.subheader("Hasil Perbandingan Foto Sekarang")
+                    for idx, filename in enumerate(result["filenames"]):
+                        st.markdown(f"### {idx + 1}. {filename}")
+                        st.write(f"Cosine Similarity: `{result['scores'][idx]:.4f}`")
+                        st.write(f"Estimasi Kemiripan: `{result['percentages'][idx]:.2f}%`")
 
-            except Exception as error:
-                st.error(str(error))
+                        img_col1, img_col2 = st.columns(2)
+                        img_col1.image(
+                            result["current_previews"][idx],
+                            caption="Deteksi wajah",
+                            use_container_width=True
+                        )
+                        img_col2.image(
+                            result["current_faces"][idx],
+                            caption="Crop wajah",
+                            clamp=True,
+                            use_container_width=True
+                        )
 
+                except Exception as error:
+                    st.error(str(error))
 
 else:
-    st.subheader("Upload Satu Foto Lama dan Banyak Foto Sekarang")
-
-    old_file = st.file_uploader(
-        "Upload satu foto lama",
-        type=["jpg", "jpeg", "png"],
-        key="old_many"
+    st.sidebar.title("Pengaturan Kompresi")
+    k = st.sidebar.slider(
+        "Nilai K untuk kompresi PCA",
+        min_value=1,
+        max_value=100,
+        value=20,
+        step=1
     )
 
-    current_files = st.file_uploader(
-        "Upload beberapa foto sekarang",
+    st.subheader("Upload Gambar untuk Kompresi")
+    uploaded_image = st.file_uploader(
+        "Upload gambar JPG/JPEG/PNG",
         type=["jpg", "jpeg", "png"],
-        accept_multiple_files=True,
-        key="current_many"
+        key="compress_image"
     )
 
-    if old_file is not None and current_files:
-        if st.button("Hitung Rata-rata Kemiripan", type="primary"):
-            try:
-                result = compare_one_to_many(old_file, current_files, pca, face_size)
+    if uploaded_image is not None:
+        try:
+            image = Image.open(uploaded_image)
+            result = compress_image_with_pca(image, k)
 
-                st.success("Perhitungan selesai.")
+            st.success("Kompresi gambar selesai.")
 
-                metric_col1, metric_col2 = st.columns(2)
-                metric_col1.metric("Rata-rata Cosine Similarity", f"{result['average_score']:.4f}")
-                metric_col2.metric("Rata-rata Estimasi Kemiripan", f"{result['average_percentage']:.2f}%")
+            st.markdown("### Perbandingan Gambar RGB")
+            rgb_col1, rgb_col2 = st.columns(2)
+            rgb_col1.image(result["original_rgb"], caption="Gambar RGB asli", use_container_width=True)
+            rgb_col2.image(result["rgb_compressed"], caption=f"RGB terkompresi (K={k})", use_container_width=True)
 
-                st.info(result["interpretation"])
+            st.markdown("### Perbandingan Gambar Grayscale")
+            gray_col1, gray_col2 = st.columns(2)
+            gray_col1.image(result["original_gray"], caption="Grayscale asli", clamp=True, use_container_width=True)
+            gray_col2.image(result["gray_compressed"], caption=f"Grayscale terkompresi (K={k})", clamp=True, use_container_width=True)
 
-                st.subheader("Skor Tiap Foto")
+            st.markdown("### Informasi Kompresi")
+            st.write(f"Ukuran gambar: {result['rows']} x {result['cols']}")
+            st.write(f"Persentase ukuran RGB setelah kompresi: {result['ratio_rgb']:.2f}%")
+            st.write(f"Persentase ukuran grayscale setelah kompresi: {result['ratio_gray']:.2f}%")
 
-                table_data = []
-                for filename, score, percentage in zip(
-                    result["filenames"],
-                    result["scores"],
-                    result["percentages"]
-                ):
-                    table_data.append(
-                        {
-                            "Nama File": filename,
-                            "Cosine Similarity": round(score, 4),
-                            "Estimasi Kemiripan": f"{percentage:.2f}%"
-                        }
-                    )
-
-                st.dataframe(table_data, use_container_width=True)
-
-                st.subheader("Foto Lama")
-                st.image(result["old_preview"], caption="Deteksi wajah pada foto lama", use_container_width=True)
-
-                st.subheader("Hasil Perbandingan Foto Sekarang")
-
-                for idx, filename in enumerate(result["filenames"]):
-                    st.markdown(f"### {idx + 1}. {filename}")
-                    st.write(f"Cosine Similarity: `{result['scores'][idx]:.4f}`")
-                    st.write(f"Estimasi Kemiripan: `{result['percentages'][idx]:.2f}%`")
-
-                    img_col1, img_col2 = st.columns(2)
-                    img_col1.image(
-                        result["current_previews"][idx],
-                        caption="Deteksi wajah",
-                        use_container_width=True
-                    )
-                    img_col2.image(
-                        result["current_faces"][idx],
-                        caption="Crop wajah",
-                        clamp=True,
-                        use_container_width=True
-                    )
-
-            except Exception as error:
-                st.error(str(error))
-
+        except Exception as error:
+            st.error(str(error))
 
 st.divider()
 
@@ -416,10 +533,12 @@ st.markdown(
     """
     ### Kesimpulan
 
-    PCA dapat digunakan untuk sistem face similarity sederhana, terutama sebagai demo atau pembelajaran.
-    Namun, untuk perubahan usia yang cukup jauh seperti 10 tahun ke 16 tahun, hasilnya sangat dipengaruhi oleh kualitas foto,
-    pose, pencahayaan, ekspresi, dan perubahan wajah alami.
+    Aplikasi ini sekarang berisi dua mode:
 
-    Untuk sistem yang lebih akurat, gunakan model modern seperti FaceNet, ArcFace, DeepFace, atau Dlib Face Recognition.
+    - Verifikasi wajah dengan PCA dan cosine similarity.
+    - Kompresi gambar RGB dan grayscale menggunakan PCA.
+
+    Mode verifikasi cocok untuk demo dan eksperimen.
+    Mode kompresi cocok untuk memahami bagaimana PCA dapat merekonstruksi gambar.
     """
 )
